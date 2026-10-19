@@ -15,6 +15,8 @@ from PySide6.QtWidgets import (
 )
 
 from video import View, Worker, discover
+from alignment import (AUTO, MODES, apply_alignment, calculate_alignment,
+                       configured_mode, episode_versions)
 
 
 def clock_text(seconds):
@@ -109,6 +111,11 @@ class MainWindow(QMainWindow):
     def __init__(self, config, directory=None):
         super().__init__()
         self.config = Path(config)
+        self.manual_offsets = {}
+        try:
+            initial_alignment = configured_mode(self.config)
+        except (OSError, ValueError):
+            initial_alignment = AUTO
         self.views, self.rows, self.workers, self.panels, self.metadata = [], {}, {}, {}, {}
         self.generation, self.batch, self.received = 0, set(), {}
         self.position, self.duration = 0.0, 0.0
@@ -139,11 +146,28 @@ class MainWindow(QMainWindow):
         self.button(top, "选择目录", self.choose)
         self.button(top, "加载", self.load)
         outer.addLayout(top)
+        self.version_label = QLabel("数据版本：未加载")
+        self.version_label.setWordWrap(True)
+        self.version_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.version_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        outer.addWidget(self.version_label)
         splitter = QSplitter(Qt.Orientation.Horizontal)
         outer.addWidget(splitter, 1)
         sidebar = QWidget()
         sidebar.setMinimumWidth(240)
         sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.addWidget(QLabel("时间对齐"))
+        self.alignment_mode = QComboBox()
+        for text, mode in [("自动对齐（仅 v2.1.14）", AUTO),
+                           ("首帧对齐", "first_frame"), ("手动偏移", "manual")]:
+            self.alignment_mode.addItem(text, mode)
+        self.alignment_mode.setCurrentIndex(MODES.index(initial_alignment))
+        self.alignment_mode.currentIndexChanged.connect(self.change_alignment)
+        sidebar_layout.addWidget(self.alignment_mode)
+        self.alignment_label = QLabel("加载后显示对齐状态")
+        self.alignment_label.setWordWrap(True)
+        self.alignment_label.setTextFormat(Qt.TextFormat.PlainText)
+        sidebar_layout.addWidget(self.alignment_label)
         sidebar_layout.addWidget(QLabel("视角选择 / 时间偏移（毫秒）"))
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -184,7 +208,7 @@ class MainWindow(QMainWindow):
         self.slider.scrub_finished.connect(self.drag_end)
         self.slider.valueChanged.connect(self.slider_changed)
         outer.addWidget(self.slider)
-        self.statusBar().showMessage("按视频首帧对齐；实际拍摄同步可通过每路偏移校正。")
+        self.statusBar().showMessage("v2.1.14 数据自动按时间戳对齐；其他版本按首帧播放。")
         self.shortcuts = []
         for key, callback in [("Space", self.toggle_play), ("Left", lambda: self.step(-1)),
                               ("Right", lambda: self.step(1)), ("Escape", lambda: self.zoom(None))]:
@@ -227,6 +251,9 @@ class MainWindow(QMainWindow):
             if not self.path.text().strip():
                 raise ValueError("请先输入或选择 episode 数据目录。")
             views = discover(Path(self.path.text()), self.config)
+            directory = Path(self.path.text()).expanduser().resolve()
+            alignment = calculate_alignment(directory, self.alignment_mode.currentData())
+            versions = episode_versions(directory)
         except Exception as exc:
             QMessageBox.critical(self, "加载失败", str(exc))
             return
@@ -242,12 +269,41 @@ class MainWindow(QMainWindow):
             self.list_layout.takeAt(0).widget().deleteLater()
         self.rows.clear()
         self.views = views
-        self.directory = Path(self.path.text()).expanduser().resolve()
+        self.directory = directory
+        self.manual_offsets = {v.path: v.offset_ms for v in views}
+        apply_alignment(views, alignment)
+        self.alignment_label.setText(alignment.message)
+        self.version_label.setText(
+            f"背包软件：{versions['host_software_version']}  ·  数据版本：{versions['host_data_version']}"
+            f"  ·  硬件：{versions['host_hardware_version']}\n"
+            f"Ego 软件：{versions['ego_software_version']}  ·  SDK：{versions['ego_sdk_version']}"
+            f"  ·  Ego 数据版本：{versions['ego_data_version']}")
         self.position, self.duration, self.zoomed = 0.0, 0.0, None
         for i in range(len(views)):
             self.create_row(i)
         self.sync_selection()
-        self.statusBar().showMessage(f"发现 {len(views)} 路视频条目；默认按首帧对齐。")
+        self.statusBar().showMessage(f"发现 {len(views)} 路视频条目；{alignment.message}")
+
+    def change_alignment(self):
+        if not self.views:
+            return
+        self.pause()
+        mode = self.alignment_mode.currentData()
+        alignment = calculate_alignment(self.directory, mode)
+        if mode == "manual":
+            for view in self.views:
+                view.offset_ms = self.manual_offsets.get(view.path, 0.0)
+        else:
+            apply_alignment(self.views, alignment)
+        for i, view in enumerate(self.views):
+            spin = self.rows[i][1]
+            spin.blockSignals(True)
+            spin.setValue(view.offset_ms)
+            spin.blockSignals(False)
+        self.alignment_label.setText(alignment.message)
+        self.statusBar().showMessage(alignment.message)
+        self.update_duration()
+        self.seek(0)
 
     def create_row(self, i):
         view = self.views[i]
@@ -276,7 +332,15 @@ class MainWindow(QMainWindow):
         self.rows[i] = (enabled, offset)
 
     def apply_offset(self, i, value):
+        # Editing an automatic result explicitly changes to manual mode.
+        if self.alignment_mode.currentData() != "manual":
+            self.alignment_mode.blockSignals(True)
+            self.alignment_mode.setCurrentIndex(MODES.index("manual"))
+            self.alignment_mode.blockSignals(False)
+            self.manual_offsets = {v.path: v.offset_ms for v in self.views}
+            self.alignment_label.setText("手动偏移；按每路输入值播放")
         self.views[i].offset_ms = value
+        self.manual_offsets[self.views[i].path] = value
         self.update_duration()
         self.seek(self.position)
 
@@ -517,9 +581,13 @@ class MainWindow(QMainWindow):
                 path = str(view.path.relative_to(self.directory))
             except ValueError:
                 path = str(view.path)
-            items.append({"name": view.name, "path": path, "enabled": view.enabled, "offset_ms": view.offset_ms})
+            # An automatic configuration is portable across episodes: never save
+            # calculated offsets as manual values for the next recording.
+            offset = view.offset_ms if self.alignment_mode.currentData() == "manual" else 0.0
+            items.append({"name": view.name, "path": path, "enabled": view.enabled, "offset_ms": offset})
         try:
-            Path(name).write_text(json.dumps({"views": items}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            settings = {"time_alignment": self.alignment_mode.currentData(), "views": items}
+            Path(name).write_text(json.dumps(settings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         except OSError as exc:
             QMessageBox.critical(self, "保存失败", str(exc))
             return

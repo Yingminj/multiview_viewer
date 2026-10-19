@@ -151,8 +151,53 @@ class WindowTests(unittest.TestCase):
         with patch('window.QFileDialog.getSaveFileName', return_value=(str(destination), 'JSON')):
             w.save_config()
         items = json.loads(destination.read_text())['views']
+        self.assertEqual(json.loads(destination.read_text())['time_alignment'], 'manual')
         self.assertEqual(items[1]['offset_ms'], -125.5)
         self.assertEqual(items[0]['path'], 'ego/rgb.mp4')
+
+    def test_alignment_switch_and_portable_auto_configuration(self):
+        from alignment import Alignment, AUTO, calculate_alignment
+        w = self.window
+
+        def calculate(directory, mode):
+            if mode == AUTO:
+                return Alignment(mode, 'aligned', '自动对齐已启用',
+                                 {w.views[0].path: 1200, w.views[1].path: 0, w.views[2].path: 850})
+            return calculate_alignment(directory, mode)
+
+        with patch('window.calculate_alignment', side_effect=calculate):
+            w.change_alignment()
+            self.settle()
+            self.assertEqual(w.rows[0][1].value(), 1200)
+            self.assertIn('自动对齐', w.alignment_label.text())
+            destination = self.directory / 'saved_auto.json'
+            with patch('window.QFileDialog.getSaveFileName', return_value=(str(destination), 'JSON')):
+                w.save_config()
+            saved = json.loads(destination.read_text())
+            self.assertEqual(saved['time_alignment'], AUTO)
+            self.assertTrue(all(v['offset_ms'] == 0 for v in saved['views']))
+            w.alignment_mode.setCurrentIndex(1)
+            self.settle()
+            self.assertTrue(all(v.offset_ms == 0 for v in w.views))
+            w.alignment_mode.setCurrentIndex(0)
+            self.settle()
+            self.assertEqual(w.views[0].offset_ms, 1200)
+            w.rows[0][1].setValue(1300)
+            self.settle()
+            self.assertEqual(w.alignment_mode.currentData(), 'manual')
+            self.assertEqual(w.views[0].offset_ms, 1300)
+            self.assertEqual(w.views[2].offset_ms, 850)
+
+    def test_versions_visible_after_loading(self):
+        values = {f'{prefix}_{key}': value for prefix, key, value in [
+            ('host', 'software_version', 'v2.1.14~release'), ('host', 'data_version', '3.2'),
+            ('host', 'hardware_version', 'v2.5'), ('ego', 'software_version', 'V1.0.6'),
+            ('ego', 'sdk_version', 'V2.1.3'), ('ego', 'data_version', '1.0')]}
+        with patch('window.episode_versions', return_value=values):
+            self.window.load()
+        self.settle()
+        for value in values.values():
+            self.assertIn(value, self.window.version_label.text())
 
     def test_shortcuts_preserve_text_editing(self):
         w = self.window

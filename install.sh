@@ -8,7 +8,7 @@ if [[ -e "$DEST" ]]; then
     exit 1
 fi
 mkdir -p -- "$DEST"
-for file in viewer.py window.py video.py views.json requirements.txt run.sh setup.sh install.sh README.md; do
+for file in viewer.py window.py video.py alignment.py views.json requirements.txt run.sh setup.sh install.sh README.md; do
     cp -- "$APP_DIR/$file" "$DEST/$file"
 done
 mkdir -p -- "$DEST/tests"

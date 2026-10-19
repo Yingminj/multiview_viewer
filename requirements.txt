@@ -2,3 +2,4 @@ PySide6>=6.7,<7
 av>=15,<18
 Pillow>=11,<13
 numpy>=2,<3
+mcap>=1.5,<2

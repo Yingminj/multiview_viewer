@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 from video import Reader, discover
+from alignment import apply_alignment, calculate_alignment, configured_mode, episode_versions
 
 HERE = Path(__file__).resolve().parent
 
@@ -36,7 +37,11 @@ def check_desktop_dependencies():
 
 def check(directory, config):
     report = []
-    for view in discover(directory, config):
+    views = discover(directory, config)
+    alignment = calculate_alignment(directory, configured_mode(config))
+    apply_alignment(views, alignment)
+    versions = episode_versions(directory)
+    for view in views:
         if not view.enabled:
             continue
         reader = None
@@ -51,6 +56,9 @@ def check(directory, config):
                                 "preview_size": image.size,
                                 "decode_ms": round((time.monotonic() - start) * 1000, 1)})
             report.append({"name": view.name, "path": str(view.path), "duration_s": reader.duration,
+                           "offset_ms": view.offset_ms, "versions": versions,
+                           "time_alignment": {"mode": alignment.mode, "status": alignment.status,
+                                              "message": alignment.message},
                            "resolution": [reader.width, reader.height], "fps": reader.fps, "samples": samples})
         except Exception as exc:
             report.append({"name": view.name, "error": str(exc)})
