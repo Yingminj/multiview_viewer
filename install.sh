@@ -2,7 +2,7 @@
 # Copy the application without copying a non-relocatable virtual environment.
 set -euo pipefail
 APP_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-DEST="${1:-/home/dm/tool/multiview_viewer}"
+DEST="${1:-/home/dm/tool/multiviewer}"
 if [[ -e "$DEST" ]]; then
     echo "目标已存在，为避免覆盖文件已停止：$DEST" >&2
     exit 1

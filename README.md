@@ -1,4 +1,4 @@
-# 多视角视频查看器
+# multiviewer — 多视角视频查看器
 
 Ubuntu 桌面工具，使用 **PySide6 + PyAV**。输入 episode 文件夹后默认显示
 `ego/rgb.mp4`、`cam_left.mkv`、`cam_right.mkv`，其他视频通过侧边栏勾选加入。
@@ -18,7 +18,7 @@ Ubuntu 桌面工具，使用 **PySide6 + PyAV**。输入 episode 文件夹后默
   `requirements.txt` 给出了允许的版本范围，安装结果可能与上述版本不同。
 
 ```bash
-cd /path/to/multiview_viewer
+cd /path/to/multiviewer
 ```
 
 ### 2. 安装 Ubuntu 系统依赖
@@ -100,27 +100,27 @@ episode/
 建议先确定最终目录，再创建虚拟环境。复制工具时指定目标路径：
 
 ```bash
-bash install.sh "$HOME/tool/multiview_viewer"
-cd "$HOME/tool/multiview_viewer"
+bash install.sh "$HOME/tool/multiviewer"
+cd "$HOME/tool/multiviewer"
 MULTIVIEW_PYTHON=/usr/bin/python3 bash setup.sh
 bash run.sh
 ```
 
 `install.sh` 复制代码、配置、说明、测试和已有的预览截图，不复制 `.venv`。
 目标目录已存在时会停止，避免覆盖文件。
-原开发者可省略目标参数，默认安装到 `/home/dm/tool/multiview_viewer/`；其他开发者应显式传入目标目录。
+原开发者可省略目标参数，默认安装到 `/home/dm/tool/multiviewer/`；其他开发者应显式传入目标目录。
 
 ### 6. 打包发送给其他开发者
 
 在源码目录的上一级执行，包中保留依赖清单和安装脚本，排除本机虚拟环境及缓存：
 
 ```bash
-tar --exclude='multiview_viewer/.venv' \
+tar --exclude='multiviewer/.venv' \
     --exclude='__pycache__' --exclude='*.pyc' --exclude='core*' \
-    -czf multiview_viewer.tar.gz multiview_viewer
+    -czf multiviewer.tar.gz multiviewer
 ```
 
-接收者执行 `tar -xzf multiview_viewer.tar.gz`，然后按本节步骤安装。
+接收者执行 `tar -xzf multiviewer.tar.gz`，然后按本节步骤安装。
 视频数据不包含在工具源码中，需要另行准备。
 
 ## 窗口操作
@@ -191,7 +191,7 @@ tar --exclude='multiview_viewer/.venv' \
 窗口渲染、播放暂停、进度条、增减视角、偏移、配置保存和缺失文件。
 
 ```bash
-cd /path/to/multiview_viewer
+cd /path/to/multiviewer
 QT_QPA_PLATFORM=offscreen .venv/bin/python \
   -m unittest discover -s tests -v
 ```

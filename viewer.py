@@ -62,7 +62,7 @@ def check(directory, config):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="多视角视频查看器 · PySide6")
+    parser = argparse.ArgumentParser(prog="multiviewer", description="multiviewer · 多视角视频查看器 · PySide6")
     parser.add_argument("directory", nargs="?", type=Path, help="episode 数据目录")
     parser.add_argument("--config", type=Path, default=HERE / "views.json")
     parser.add_argument("--check", action="store_true", help="无窗口检查默认视频及时间跳转")
@@ -83,7 +83,7 @@ def main():
     from PySide6.QtWidgets import QApplication
     from window import MainWindow
     app = QApplication(sys.argv[:1])
-    app.setApplicationName("多视角视频查看器")
+    app.setApplicationName("multiviewer")
     window = MainWindow(args.config, args.directory)
     window.show()
     return app.exec()

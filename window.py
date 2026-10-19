@@ -114,7 +114,7 @@ class MainWindow(QMainWindow):
         self.position, self.duration = 0.0, 0.0
         self.playing, self.step_pending, self.zoomed = False, False, None
         self.updating_slider = False
-        self.setWindowTitle("多视角视频查看器")
+        self.setWindowTitle("multiviewer · 多视角视频查看器")
         self.resize(1440, 900)
         self.setMinimumSize(960, 640)
         self.setStyleSheet("""
