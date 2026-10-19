@@ -1,0 +1,7 @@
+{
+  "views": [
+    {"name": "Ego", "path": "ego/rgb.mp4", "enabled": true, "offset_ms": 0},
+    {"name": "左相机", "path": "cam_left.mkv", "enabled": true, "offset_ms": 0},
+    {"name": "右相机", "path": "cam_right.mkv", "enabled": true, "offset_ms": 0}
+  ]
+}
