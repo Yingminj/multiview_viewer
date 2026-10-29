@@ -45,12 +45,13 @@ class AlignmentTests(unittest.TestCase):
                          {'name': 'cam_right.mkv', 'start_offset_us': (self.epoch + 850_000_000 - self.pts[0]) // 1000}]}
         self.write_fixture()
 
-    def write_fixture(self, *, exposure_ns=10_000_000, drift_ns=0, missing=False, duplicate=False):
+    def write_fixture(self, *, exposure_ns=10_000_000, drift_ns=0, mid_drift_ns=0,
+                      missing=False, duplicate=False):
         (self.root / 'metadata.json').write_text(json.dumps(self.host))
-        mid0 = self.epoch + 1_200_000_000
+        end0 = self.epoch + 1_200_000_000
         ego = {'software_version': 'V1.0.6', 'sdk_version': 'V2.1.3',
                'time_sync_mapping': {'output_timestamp_domain': 'unix_ns', 'video_pts_reference': 'exposure_end'},
-               'video_details': [{'name': 'rgb.mp4', 'start_offset_us': (mid0 + exposure_ns // 2 - self.pts[0]) // 1000}]}
+               'video_details': [{'name': 'rgb.mp4', 'start_offset_us': (end0 - self.pts[0]) // 1000}]}
         (self.root / 'ego/metadata.json').write_text(json.dumps(ego))
         with (self.root / 'ego/sensor.mcap').open('wb') as f:
             writer = Writer(f)
@@ -60,21 +61,27 @@ class AlignmentTests(unittest.TestCase):
             for i, pts in enumerate(self.pts):
                 if missing and i == 2:
                     continue
-                mid = mid0 + pts - self.pts[0] + (drift_ns if i == 2 else 0)
-                payload = struct.pack('<3q4I', mid - exposure_ns // 2, mid, pts // 1000,
+                end = end0 + pts - self.pts[0] + (drift_ns if i == 2 else 0)
+                mid = end - exposure_ns // 2 + (mid_drift_ns if i == 2 else 0)
+                payload = struct.pack('<3q4I', end - exposure_ns, mid, pts // 1000,
                                       0 if duplicate else i, i + 100, exposure_ns, 1)
                 writer.add_message(channel, log_time=mid, publish_time=mid, data=payload)
             writer.finish()
 
-    def test_aligns_nonzero_pts_using_exposure_midpoint_not_metadata_end(self):
+    def test_aligns_nonzero_pts_using_exposure_end(self):
         result = calculate_alignment(self.root)
         self.assertEqual(result.status, 'aligned', result.message)
         self.assertEqual(result.offsets_ms[self.root / 'cam_left.mkv'], 0)
         self.assertEqual(result.offsets_ms[self.root / 'cam_right.mkv'], 850)
         self.assertEqual(result.offsets_ms[self.root / 'ego/rgb.mp4'], 1200)
-        # Changing exposure does not turn into an invented fixed 5 ms correction.
         self.write_fixture(exposure_ns=30_000_000)
         self.assertEqual(calculate_alignment(self.root).offsets_ms[self.root / 'ego/rgb.mp4'], 1200)
+
+    def test_midpoint_jitter_does_not_reject_stable_exposure_end(self):
+        self.write_fixture(mid_drift_ns=200_000)
+        result = calculate_alignment(self.root)
+        self.assertEqual(result.status, 'aligned', result.message)
+        self.assertEqual(result.offsets_ms[self.root / 'ego/rgb.mp4'], 1200)
 
     def test_only_exact_supported_release_reads_timing(self):
         for version in ['v2.1.11~release', 'v2.1.10', 'v2.1.140', 'v2.1.15', 'unknown']:

@@ -74,14 +74,14 @@ def first_pts_ns(path):
         return round(frame.pts * frame.time_base * 1_000_000_000)
 
 
-def ego_midpoint_origin(directory, metadata):
+def ego_exposure_end_origin(directory, metadata):
     from mcap.reader import NonSeekingReader
 
     mapping = metadata.get("time_sync_mapping", {})
     if mapping.get("output_timestamp_domain") != "unix_ns":
         raise ValueError("Ego 未声明 Unix 时间域")
-    if mapping.get("video_pts_reference") not in ("exposure_end", "mid_exposure", "exposure_midpoint"):
-        raise ValueError("Ego 曝光参考标记缺失或不支持")
+    if mapping.get("video_pts_reference") != "exposure_end":
+        raise ValueError("Ego 未声明 PTS 对应曝光完成时刻")
     # Streaming reader also handles these recordings' incomplete MCAP summaries.
     records = []
     with (directory / "ego/sensor.mcap").open("rb") as source:
@@ -105,29 +105,29 @@ def ego_midpoint_origin(directory, metadata):
     if len(pts) != len(records):
         raise ValueError("Ego 视频帧数与 rgb_metainfo 不一致")
     origins = []
-    previous_mid = previous_pts = None
+    previous_end = previous_pts = None
     for index, (record, pts_ns) in enumerate(zip(records, pts)):
         exposure_start, mid, meta_pts_us, frame_index, _, exposure_ns, _ = record
-        if frame_index != index or mid < UNIX_MIN_NS or exposure_ns <= 0:
+        exposure_end = exposure_start + exposure_ns
+        if frame_index != index or exposure_start < UNIX_MIN_NS or exposure_ns <= 0:
             raise ValueError("Ego 曝光时间或帧索引无效")
-        if not exposure_start <= mid <= exposure_start + exposure_ns + MAX_TIMELINE_ERROR_NS:
+        if not exposure_start <= mid <= exposure_end + MAX_TIMELINE_ERROR_NS:
             raise ValueError("Ego 曝光中点与曝光区间不一致")
-        if previous_mid is not None and (mid <= previous_mid or pts_ns <= previous_pts):
+        if previous_end is not None and (exposure_end <= previous_end or pts_ns <= previous_pts):
             raise ValueError("Ego 时间轴不是严格递增")
         if abs(pts_ns - meta_pts_us * 1000) > 1000:
             raise ValueError("Ego 视频 PTS 与曝光元信息不匹配")
-        previous_mid, previous_pts = mid, pts_ns
-        origins.append(mid - pts_ns)
+        previous_end, previous_pts = exposure_end, pts_ns
+        origins.append(exposure_end - pts_ns)
     if max(origins) - min(origins) > MAX_TIMELINE_ERROR_NS:
-        raise ValueError("Ego 曝光时间与 PTS 存在变化，固定偏移无法可靠对齐")
+        raise ValueError("Ego 曝光完成时间与 PTS 存在变化，固定偏移无法可靠对齐")
     if first_pts_ns(path) != pts[0]:
         raise ValueError("Ego 首个可解码帧与元信息不匹配")
-    # Metadata is also required, but its exposure-end origin is not used as mid.
     reference = start_ns(metadata, "rgb.mp4") + pts[0]
-    expected = records[0][0] + records[0][5] if mapping["video_pts_reference"] == "exposure_end" else records[0][1]
+    expected = records[0][0] + records[0][5]
     if abs(reference - expected) > MAX_TIMELINE_ERROR_NS:
-        raise ValueError("Ego metadata 起点与曝光参考不一致")
-    return records[0][1], max(origins) - min(origins)
+        raise ValueError("Ego metadata 起点与曝光完成时刻不一致")
+    return expected, max(origins) - min(origins)
 
 
 @dataclass
@@ -154,13 +154,13 @@ def calculate_alignment(directory, mode=AUTO):
         ego = read_json(directory / "ego/metadata.json")
         starts = {name: start_ns(metadata, name) + first_pts_ns(directory / name)
                   for name in CAMERAS[:2]}
-        starts[CAMERAS[2]], _ = ego_midpoint_origin(directory, ego)
+        starts[CAMERAS[2]], _ = ego_exposure_end_origin(directory, ego)
         origin = min(starts.values())
         offsets = {(directory / name).resolve(): (value - origin) / 1_000_000
                    for name, value in starts.items()}
         if any(not math.isfinite(x) or x > 3_600_000 for x in offsets.values()):
             raise ValueError("三路起点跨度超出播放器范围")
-        return Alignment(mode, "aligned", "v2.1.14 三路自动对齐已启用（Ego 曝光中点）；其他视角未自动对齐", offsets)
+        return Alignment(mode, "aligned", "v2.1.14 三路自动对齐已启用（Ego 曝光完成时刻）；其他视角未自动对齐", offsets)
     except Exception as exc:
         return Alignment(mode, "unavailable", f"自动对齐未启用，已按首帧播放：{exc}")
 

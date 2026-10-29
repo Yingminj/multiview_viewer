@@ -161,17 +161,18 @@ tar --exclude='multiviewer/.venv' \
 
 1. 左右主摄：根 metadata 的 `video_details[].start_offset_us` 加首个可解码帧的实际 PTS。
 2. Ego：确认自身 metadata 中的 `time_sync_mapping.output_timestamp_domain=unix_ns`
-   和曝光参考标记，读取 `ego/sensor.mcap` 的 `rgb_metainfo.mid_exposure_utc_ns`。
+   和 `video_pts_reference=exposure_end`，读取 `ego/sensor.mcap` 的逐帧曝光开始时间与时长，
+   以 `exposure_start_utc_ns + exposure_duration_ns` 作为曝光完成时刻。
    **不写死 5 ms 修正**，也不把 `ego_sync.json` 的协议时钟偏差再次加到视频上。
 3. 取三路最早首帧为全局零点，计算各自偏移，替换已有偏移，避免重复补偿。
 
 播放器保留原始 PTS，用固定偏移实现回放。加载时检查 Ego 元信息的逐帧索引、视频帧数、
-PTS 和曝光时间：元信息必须完整匹配，`mid_exposure_utc_ns − PTS_ns` 的跨度不得超过
+PTS 和曝光时间：元信息必须完整匹配，`曝光完成时刻 − PTS_ns` 的跨度不得超过
 0.1 ms。若时轴需要动态修正、缺少 MCAP/起点或验证失败，则三路一同退回首帧播放，
-侧边栏明确显示原因，不会只对齐其中两路。Ego 的 metadata 起点也必须与声明的曝光参考一致。
+侧边栏明确显示原因，不会只对齐其中两路。Ego 的 metadata 起点也必须与首帧曝光完成时刻一致。
 这项校验保证固定偏移适用于该文件，不是相机之间光学曝光精度的证明。
 
-0049 实测自动偏移：左摄 **0 ms**，右摄 **853.168 ms**，Ego **1163.863 ms**。
+自动偏移由各路首帧参考时间决定，其中 Ego 使用首帧曝光完成时刻。
 全局时间约 1.164 秒后，三路才都有有效画面。无需另外生成或传入该 episode 的专用配置：
 
 ```bash
