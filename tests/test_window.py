@@ -49,6 +49,7 @@ class WindowTests(unittest.TestCase):
     def tearDown(self):
         workers = list(self.window.workers.values())
         self.window.close()
+        self.assertTrue(self.window.shutdown())
         for worker in workers:
             worker.join(3)
             self.assertFalse(worker.is_alive())
@@ -74,6 +75,19 @@ class WindowTests(unittest.TestCase):
             self.assertFalse(canvas.image.isNull())
             self.assertIn('帧时间', info.text())
             self.assertGreater(canvas.width(), 100)
+
+    def test_close_cleans_up_active_and_retired_workers(self):
+        w = self.window
+        workers = list(w.workers.values())
+        w.rows[0][0].setChecked(False)
+        w.load()
+        self.settle()
+        workers.extend(w.workers.values())
+        w.close()
+        self.assertTrue(w.shutdown())
+        self.assertTrue(all(not worker.is_alive() for worker in workers))
+        self.assertFalse(w.timer.isActive())
+        self.assertFalse(w.resize_timer.isActive())
 
     def test_seek_and_exact_variable_rate_steps(self):
         w = self.window

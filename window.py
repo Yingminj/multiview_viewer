@@ -117,6 +117,8 @@ class MainWindow(QMainWindow):
         except (OSError, ValueError):
             initial_alignment = AUTO
         self.views, self.rows, self.workers, self.panels, self.metadata = [], {}, {}, {}, {}
+        self.all_workers = set()
+        self.closing = False
         self.generation, self.batch, self.received = 0, set(), {}
         self.position, self.duration = 0.0, 0.0
         self.playing, self.step_pending, self.zoomed = False, False, None
@@ -158,7 +160,7 @@ class MainWindow(QMainWindow):
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.addWidget(QLabel("时间对齐"))
         self.alignment_mode = QComboBox()
-        for text, mode in [("自动对齐（仅 v2.1.14）", AUTO),
+        for text, mode in [("自动对齐（曝光结束）", AUTO),
                            ("首帧对齐", "first_frame"), ("手动偏移", "manual")]:
             self.alignment_mode.addItem(text, mode)
         self.alignment_mode.setCurrentIndex(MODES.index(initial_alignment))
@@ -208,7 +210,7 @@ class MainWindow(QMainWindow):
         self.slider.scrub_finished.connect(self.drag_end)
         self.slider.valueChanged.connect(self.slider_changed)
         outer.addWidget(self.slider)
-        self.statusBar().showMessage("v2.1.14 数据自动按时间戳对齐；其他版本按首帧播放。")
+        self.statusBar().showMessage("各版本均尝试按曝光结束时间对齐；无法对齐时按首帧播放。")
         self.shortcuts = []
         for key, callback in [("Space", self.toggle_play), ("Left", lambda: self.step(-1)),
                               ("Right", lambda: self.step(1)), ("Escape", lambda: self.zoom(None))]:
@@ -247,6 +249,8 @@ class MainWindow(QMainWindow):
             self.load()
 
     def load(self):
+        if self.closing:
+            return
         try:
             if not self.path.text().strip():
                 raise ValueError("请先输入或选择 episode 数据目录。")
@@ -345,11 +349,14 @@ class MainWindow(QMainWindow):
         self.seek(self.position)
 
     def sync_selection(self):
+        if self.closing:
+            return
         self.step_pending = False
         for i, view in enumerate(self.views):
             view.enabled = self.rows[i][0].isChecked()
             if view.enabled and i not in self.workers:
                 self.workers[i] = Worker(view.path)
+                self.all_workers.add(self.workers[i])
             elif not view.enabled and i in self.workers:
                 self.workers.pop(i).stop()
         if self.zoomed not in self.workers:
@@ -421,6 +428,8 @@ class MainWindow(QMainWindow):
             self.request_frames()
 
     def request_frames(self):
+        if self.closing:
+            return
         self.step_pending = False
         self.generation += 1
         self.batch = set(self.workers)
@@ -435,6 +444,7 @@ class MainWindow(QMainWindow):
         self.update_clock()
 
     def poll(self):
+        self.all_workers = {worker for worker in self.all_workers if worker.is_alive()}
         for i, worker in list(self.workers.items()):
             try:
                 generation, value = worker.results.get_nowait()
@@ -593,9 +603,23 @@ class MainWindow(QMainWindow):
             return
         self.statusBar().showMessage(f"配置已保存；下次启动可指定 --config {name}")
 
-    def closeEvent(self, event):
+    def stop_workers(self):
+        self.closing = True
+        self.playing = False
         self.timer.stop()
         self.resize_timer.stop()
-        for worker in self.workers.values():
+        for worker in self.all_workers:
             worker.stop()
+
+    def shutdown(self, timeout=2.0):
+        """Join active and retired decoders using one shared exit deadline."""
+        self.stop_workers()
+        deadline = time.monotonic() + timeout
+        for worker in self.all_workers:
+            worker.join(max(0.0, deadline - time.monotonic()))
+        self.all_workers = {worker for worker in self.all_workers if worker.is_alive()}
+        return not self.all_workers
+
+    def closeEvent(self, event):
+        self.stop_workers()
         event.accept()

@@ -72,10 +72,9 @@ def main():
                           'checks': ['三路画面', '前后逐帧', '播放暂停', '增加和取消第四视角', '结束状态', '反向跳转'],
                           'screenshot': str(args.screenshot or '')}, ensure_ascii=False, indent=2))
     finally:
-        workers = list(window.workers.values())
         window.close()
-        for worker in workers:
-            worker.join(5)
+        if not window.shutdown(timeout=5):
+            os._exit(1)
 
 
 if __name__ == '__main__':

@@ -1,4 +1,4 @@
-"""Version-gated alignment of the three original RGB videos.
+"""Exposure-end alignment of the three original RGB videos across versions.
 
 Keep Unix arithmetic in integer nanoseconds. The viewer uses fixed offsets, so
 only accept an Ego metainfo timeline that agrees with its actual PTS throughout
@@ -8,18 +8,22 @@ from __future__ import annotations
 
 import json
 import math
-import re
 import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import av
 
-AUTO = "auto_v2_1_14"
+AUTO = "auto_exposure_end"
+LEGACY_AUTO = "auto_v2_1_14"
 MODES = (AUTO, "first_frame", "manual")
 CAMERAS = ("cam_left.mkv", "cam_right.mkv", "ego/rgb.mp4")
 UNIX_MIN_NS = 946684800_000_000_000
 MAX_TIMELINE_ERROR_NS = 100_000
+META_DESCRIPTION = (
+    "little-endian: int64 exposure_start_utc_ns, int64 mid_exposure_utc_ns, "
+    "int64 pts_us, uint32 frame_index, uint32 frame_id, uint32 exposure_duration_ns, uint32 gain"
+)
 
 
 def read_json(path):
@@ -31,6 +35,8 @@ def read_json(path):
 
 def configured_mode(config):
     mode = read_json(config).get("time_alignment", AUTO)
+    if mode == LEGACY_AUTO:
+        mode = AUTO
     if mode not in MODES:
         raise ValueError(f"未知时间对齐设置：{mode}")
     return mode
@@ -47,11 +53,6 @@ def episode_versions(directory):
         for key in ("software_version", "data_version", "hardware_version", "sdk_version"):
             result[f"{prefix}_{key}"] = str(data.get(key) or "未知")
     return result
-
-
-def supports_alignment(version):
-    # Deliberately exclude 2.1.140 and newer releases until verified.
-    return re.fullmatch(r"v?2\.1\.14(?:[~+\-][A-Za-z0-9._~+\-]+)?", version) is not None
 
 
 def start_ns(metadata, name):
@@ -77,18 +78,24 @@ def first_pts_ns(path):
 def ego_exposure_end_origin(directory, metadata):
     from mcap.reader import NonSeekingReader
 
-    mapping = metadata.get("time_sync_mapping", {})
-    if mapping.get("output_timestamp_domain") != "unix_ns":
+    mapping = metadata.get("time_sync_mapping")
+    legacy = mapping is None
+    if not legacy and mapping.get("output_timestamp_domain") != "unix_ns":
         raise ValueError("Ego 未声明 Unix 时间域")
-    if mapping.get("video_pts_reference") != "exposure_end":
+    if not legacy and mapping.get("video_pts_reference") != "exposure_end":
         raise ValueError("Ego 未声明 PTS 对应曝光完成时刻")
     # Streaming reader also handles these recordings' incomplete MCAP summaries.
     records = []
     with (directory / "ego/sensor.mcap").open("rb") as source:
         reader = NonSeekingReader(source, validate_crcs=True)
-        for _, channel, message in reader.iter_messages(log_time_order=False):
+        for schema, channel, message in reader.iter_messages(log_time_order=False):
             if channel.topic.lstrip("/") != "rgb_metainfo":
                 continue
+            # Older recordings declare UTC fields in the MCAP schema instead
+            # of time_sync_mapping. Do not guess the clock domain or layout.
+            if legacy and (schema is None or schema.encoding != "jsonschema" or
+                           json.loads(schema.data).get("description") != META_DESCRIPTION):
+                raise ValueError("旧版 Ego 缺少可识别的 UTC 曝光元信息格式")
             if len(message.data) != 40:
                 raise ValueError("rgb_metainfo 帧记录格式不支持")
             records.append(struct.unpack("<3q4I", message.data))
@@ -125,7 +132,10 @@ def ego_exposure_end_origin(directory, metadata):
         raise ValueError("Ego 首个可解码帧与元信息不匹配")
     reference = start_ns(metadata, "rgb.mp4") + pts[0]
     expected = records[0][0] + records[0][5]
-    if abs(reference - expected) > MAX_TIMELINE_ERROR_NS:
+    # Legacy metadata can anchor the midpoint. Validate that anchor, but always
+    # use the measured exposure end for playback; never add a hardcoded 5 ms.
+    references = (expected, records[0][1]) if legacy else (expected,)
+    if min(abs(reference - value) for value in references) > MAX_TIMELINE_ERROR_NS:
         raise ValueError("Ego metadata 起点与曝光完成时刻不一致")
     return expected, max(origins) - min(origins)
 
@@ -140,6 +150,8 @@ class Alignment:
 
 def calculate_alignment(directory, mode=AUTO):
     directory = Path(directory).expanduser().resolve()
+    if mode == LEGACY_AUTO:
+        mode = AUTO
     if mode not in MODES:
         raise ValueError(f"未知时间对齐设置：{mode}")
     if mode == "manual":
@@ -148,9 +160,6 @@ def calculate_alignment(directory, mode=AUTO):
         return Alignment(mode, "first_frame", "首帧对齐；三路均从各自 0 秒播放")
     try:
         metadata = read_json(directory / "metadata.json")
-        version = str(metadata.get("software_version", "未知"))
-        if not supports_alignment(version):
-            return Alignment(mode, "unsupported", f"{version} 未启用自动对齐；按首帧播放")
         ego = read_json(directory / "ego/metadata.json")
         starts = {name: start_ns(metadata, name) + first_pts_ns(directory / name)
                   for name in CAMERAS[:2]}
@@ -160,7 +169,7 @@ def calculate_alignment(directory, mode=AUTO):
                    for name, value in starts.items()}
         if any(not math.isfinite(x) or x > 3_600_000 for x in offsets.values()):
             raise ValueError("三路起点跨度超出播放器范围")
-        return Alignment(mode, "aligned", "v2.1.14 三路自动对齐已启用（Ego 曝光完成时刻）；其他视角未自动对齐", offsets)
+        return Alignment(mode, "aligned", "三路自动对齐已启用（Ego 曝光完成时刻）；其他视角未自动对齐", offsets)
     except Exception as exc:
         return Alignment(mode, "unavailable", f"自动对齐未启用，已按首帧播放：{exc}")
 

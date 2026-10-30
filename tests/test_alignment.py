@@ -5,15 +5,14 @@ import tempfile
 import unittest
 from fractions import Fraction
 from pathlib import Path
-from unittest.mock import patch
 
 import av
 import numpy as np
 from mcap.writer import Writer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from alignment import (AUTO, apply_alignment, calculate_alignment,
-                       configured_mode, episode_versions, supports_alignment)
+from alignment import (AUTO, LEGACY_AUTO, META_DESCRIPTION, apply_alignment, calculate_alignment,
+                       configured_mode, episode_versions)
 from video import View
 
 
@@ -46,17 +45,26 @@ class AlignmentTests(unittest.TestCase):
         self.write_fixture()
 
     def write_fixture(self, *, exposure_ns=10_000_000, drift_ns=0, mid_drift_ns=0,
-                      missing=False, duplicate=False):
+                      missing=False, duplicate=False, legacy=False, metadata_shift_ns=0,
+                      declared_reference='exposure_end', declared_domain='unix_ns',
+                      known_schema=True):
         (self.root / 'metadata.json').write_text(json.dumps(self.host))
         end0 = self.epoch + 1_200_000_000
         ego = {'software_version': 'V1.0.6', 'sdk_version': 'V2.1.3',
-               'time_sync_mapping': {'output_timestamp_domain': 'unix_ns', 'video_pts_reference': 'exposure_end'},
-               'video_details': [{'name': 'rgb.mp4', 'start_offset_us': (end0 - self.pts[0]) // 1000}]}
+               'time_sync_mapping': {'output_timestamp_domain': declared_domain,
+                                     'video_pts_reference': declared_reference},
+               'video_details': [{'name': 'rgb.mp4', 'start_offset_us':
+                                  (end0 - self.pts[0] + metadata_shift_ns -
+                                   (exposure_ns // 2 if legacy else 0)) // 1000}]}
+        if legacy:
+            ego.pop('time_sync_mapping')
         (self.root / 'ego/metadata.json').write_text(json.dumps(ego))
         with (self.root / 'ego/sensor.mcap').open('wb') as f:
             writer = Writer(f)
             writer.start()
-            schema = writer.register_schema(name='SxrEgoCameraMeta', encoding='jsonschema', data=b'{}')
+            schema = writer.register_schema(name='SxrEgoCameraMeta', encoding='jsonschema',
+                                            data=json.dumps({'description': META_DESCRIPTION}
+                                                            if known_schema else {}).encode())
             channel = writer.register_channel(topic='rgb_metainfo', message_encoding='binary', schema_id=schema)
             for i, pts in enumerate(self.pts):
                 if missing and i == 2:
@@ -83,14 +91,42 @@ class AlignmentTests(unittest.TestCase):
         self.assertEqual(result.status, 'aligned', result.message)
         self.assertEqual(result.offsets_ms[self.root / 'ego/rgb.mp4'], 1200)
 
-    def test_only_exact_supported_release_reads_timing(self):
-        for version in ['v2.1.11~release', 'v2.1.10', 'v2.1.140', 'v2.1.15', 'unknown']:
-            self.host['software_version'] = version
-            self.write_fixture()
-            with patch('alignment.first_pts_ns', side_effect=AssertionError('must not probe')):
-                self.assertEqual(calculate_alignment(self.root).status, 'unsupported')
-        self.assertTrue(supports_alignment('2.1.14'))
-        self.assertTrue(supports_alignment('v2.1.14~release'))
+    def test_all_versions_attempt_exposure_end_alignment(self):
+        for version in ['v2.1.11~release', 'v2.1.10', 'v2.1.140', 'v2.1.15', 'unknown', None]:
+            with self.subTest(version=version):
+                self.host['software_version'] = version
+                self.write_fixture()
+                result = calculate_alignment(self.root)
+                self.assertEqual(result.status, 'aligned', result.message)
+                self.assertEqual(result.offsets_ms[self.root / 'ego/rgb.mp4'], 1200)
+
+    def test_legacy_midpoint_metadata_uses_measured_exposure_end(self):
+        for exposure in [5_876_682, 10_000_000, 30_000_000]:
+            with self.subTest(exposure=exposure):
+                self.host['software_version'] = 'v2.1.11~release'
+                self.write_fixture(legacy=True, exposure_ns=exposure)
+                result = calculate_alignment(self.root)
+                self.assertEqual(result.status, 'aligned', result.message)
+                self.assertEqual(result.offsets_ms[self.root / 'ego/rgb.mp4'], 1200)
+
+    def test_invalid_timing_falls_back_across_versions(self):
+        for legacy in [True, False]:
+            for options in [{'metadata_shift_ns': 1_000_000}, {'drift_ns': 200_000},
+                            {'missing': True}, {'duplicate': True}]:
+                with self.subTest(legacy=legacy, options=options):
+                    self.write_fixture(legacy=legacy, **options)
+                    result = calculate_alignment(self.root)
+                    self.assertEqual(result.status, 'unavailable', result.message)
+                    self.assertFalse(result.offsets_ms)
+
+    def test_conflicting_time_declarations_are_not_legacy(self):
+        for options in [{'declared_reference': 'exposure_mid'}, {'declared_domain': 'boottime_ns'},
+                        {'legacy': True, 'known_schema': False}]:
+            with self.subTest(options=options):
+                self.write_fixture(**options)
+                result = calculate_alignment(self.root)
+                self.assertEqual(result.status, 'unavailable')
+                self.assertFalse(result.offsets_ms)
 
     def test_bad_or_missing_metainfo_never_partially_aligns(self):
         for options in [{'missing': True}, {'duplicate': True}, {'drift_ns': 200_000}]:
@@ -101,7 +137,7 @@ class AlignmentTests(unittest.TestCase):
         (self.root / 'ego/sensor.mcap').unlink()
         self.assertEqual(calculate_alignment(self.root).status, 'unavailable')
 
-    def test_saved_offsets_are_replaced_and_other_versions_reset(self):
+    def test_saved_offsets_are_replaced_and_fallback_resets_all_views(self):
         views = [View('left', self.root / 'cam_left.mkv', True, 900),
                  View('ego', self.root / 'ego/rgb.mp4', True, 1200)]
         result = calculate_alignment(self.root)
@@ -109,7 +145,7 @@ class AlignmentTests(unittest.TestCase):
         apply_alignment(views, result)
         self.assertEqual([v.offset_ms for v in views], [0, 1200])
         self.host['software_version'] = 'v2.1.11'
-        self.write_fixture()
+        self.write_fixture(missing=True)
         apply_alignment(views, calculate_alignment(self.root))
         self.assertEqual([v.offset_ms for v in views], [0, 0])
 
@@ -127,6 +163,11 @@ class AlignmentTests(unittest.TestCase):
         config = self.root / 'views.json'
         config.write_text('{"views": []}')
         self.assertEqual(configured_mode(config), AUTO)
+        config.write_text(json.dumps({'time_alignment': LEGACY_AUTO, 'views': []}))
+        self.assertEqual(configured_mode(config), AUTO)
+        result = calculate_alignment(self.root, LEGACY_AUTO)
+        self.assertEqual(result.mode, AUTO)
+        self.assertEqual(result.status, 'aligned')
         config.write_text('{"time_alignment": "manual", "views": []}')
         self.assertEqual(configured_mode(config), 'manual')
         config.write_text('{"time_alignment": "broken", "views": []}')

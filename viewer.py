@@ -93,8 +93,18 @@ def main():
     app = QApplication(sys.argv[:1])
     app.setApplicationName("multiviewer")
     window = MainWindow(args.config, args.directory)
+    app.aboutToQuit.connect(window.stop_workers)
     window.show()
-    return app.exec()
+    exit_code = 1
+    try:
+        exit_code = app.exec()
+        return exit_code
+    finally:
+        if not window.shutdown():
+            # A native decoder can be stuck inside FFmpeg. Python cannot kill
+            # that thread safely, and non-daemon threads would keep the process
+            # alive after the window disappears. Terminate only this instance.
+            os._exit(exit_code)
 
 
 if __name__ == "__main__":

@@ -164,6 +164,8 @@ class Worker(threading.Thread):
 
     def request(self, generation, target, size, direction=0):
         with self.condition:
+            if self.stopping:
+                return
             self.pending = (generation, target, size, direction)
             self.condition.notify()
 
